@@ -1,0 +1,22 @@
+knowledge_base:
+  root_directory: "./knowledge-base"
+  system_directory: "system"
+  git:
+    enabled: false
+  file_patterns:
+    markdown_extensions: [".md", ".markdown"]
+    ignore_patterns: [".*", "*.tmp", "node_modules/", "system/.index/"]
+
+server:
+  host: "localhost"
+  port: 8000
+  log_level: "INFO"
+
+search:
+  index_directory: "system/.index"
+  rebuild_on_startup: false
+
+templates:
+  template_directory: "system/templates"
+  date_format: "%Y-%m-%d"
+  time_format: "%H:%M"
