@@ -4,6 +4,10 @@ import frontmatter
 import os
 import json
 from datetime import datetime
+import logging
+import traceback
+
+logger = logging.getLogger(__name__)
 
 class FileManager:
     def __init__(self, root_directory: str, system_directory: str = "system"):
@@ -20,14 +24,23 @@ class FileManager:
         # Ensure parent directory exists
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
+        logger.debug(f"Attempting to create file: {file_path}")
         # Create frontmatter post
         post = frontmatter.Post(content)
         if metadata:
             post.metadata.update(metadata)
         
         # Write file
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(frontmatter.dumps(post))
+        try:
+            dumped_content = frontmatter.dumps(post)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(dumped_content)
+            logger.debug(f"Successfully created file: {file_path}")
+        except Exception as e:
+            logger.error(f"Error dumping or writing file {file_path}: {e}")
+            tb = traceback.format_exc()
+            logger.error(tb)
+            raise
         
         return str(file_path.relative_to(self.root_path))
     

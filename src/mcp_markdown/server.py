@@ -1,13 +1,23 @@
 import asyncio
 from mcp.server import Server
-from mcp.types import Tool, TextContent, Resource
+from mcp.types import Tool, TextContent, Resource, TextResourceContents
 import argparse
 import logging
+import traceback
 from .config import load_config
 from .file_operations import FileManager
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+# Set up logging
+log_file_path = "server.log"
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file_path),
+        logging.StreamHandler() # Also keep console output for immediate feedback
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class MarkdownMCPServer:
@@ -18,6 +28,7 @@ class MarkdownMCPServer:
             self.config.knowledge_base.system_directory
         )
         self.server = Server("markdown-knowledge-base")
+        self.file_manager.create_llm_guide()
         self._register_tools()
         self._register_resources()
     
@@ -152,7 +163,9 @@ class MarkdownMCPServer:
             
             except Exception as e:
                 logger.error(f"Error in tool {name}: {e}")
-                return [TextContent(type="text", text=f"Error: {str(e)}")]
+                tb = traceback.format_exc()
+                logger.error(tb)
+                return [TextContent(type="text", text=f"Error executing tool '{name}':\n\n{tb}")]
     
     def _register_resources(self):
         """Register all MCP resources"""
@@ -172,28 +185,29 @@ class MarkdownMCPServer:
         async def read_resource(uri: str):
             try:
                 if uri == "llm-guide://system/llm-guide.md":
-                    guide_data = self.file_manager.get_llm_guide()
+                    guide_data = self.file_manager.read_file("system/llm-guide.md")
                     content = guide_data['content']
                     if guide_data['metadata']:
                         # Add metadata as frontmatter
                         metadata_str = "\n".join([f"{k}: {v}" for k, v in guide_data['metadata'].items()])
                         content = f"---\n{metadata_str}\n---\n\n{content}"
-                    return [TextContent(type="text", text=content)]
+                    # Return content string - MCP library handles the wrapping
+                    return content
                 else:
-                    return [TextContent(type="text", text=f"Unknown resource: {uri}")]
+                    return f"Unknown resource: {uri}"
             except Exception as e:
                 logger.error(f"Error reading resource {uri}: {e}")
-                return [TextContent(type="text", text=f"Error: {str(e)}")]
+                return f"Error: {str(e)}"
     
-    async def run(self):
-        """Run the MCP server"""
-        logger.info(f"Starting MCP server for knowledge base: {self.config.knowledge_base.root_directory}")
-        await self.server.run()
+    def app(self):
+        return self.server
 
 def main():
     parser = argparse.ArgumentParser(description="Markdown Knowledge Base MCP Server")
     parser.add_argument("--config", help="Path to configuration file")
     parser.add_argument("--knowledge-base", help="Path to knowledge base directory")
+    parser.add_argument("--host", help="Host to bind to")
+    parser.add_argument("--port", help="Port to bind to")
     
     args = parser.parse_args()
     
@@ -202,8 +216,15 @@ def main():
         import os
         os.environ["KNOWLEDGE_BASE_ROOT"] = args.knowledge_base
     
-    server = MarkdownMCPServer(args.config)
-    asyncio.run(server.run())
+    mcp_server = MarkdownMCPServer(args.config)
+    
+    # Get host and port from args or config
+    host = args.host or mcp_server.config.server.host
+    port = args.port or mcp_server.config.server.port
+    
+    import uvicorn
+    logger.info(f"Starting MCP server for knowledge base: {mcp_server.config.knowledge_base.root_directory} on {host}:{port}")
+    uvicorn.run(mcp_server.server, host=host, port=port)
 
 if __name__ == "__main__":
     main()
