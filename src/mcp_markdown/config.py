@@ -14,7 +14,7 @@ class KnowledgeBaseConfig(BaseModel):
     }
 
 class ServerConfig(BaseModel):
-    host: str = "localhost"
+    host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
 

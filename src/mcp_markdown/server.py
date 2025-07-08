@@ -1,13 +1,13 @@
 import asyncio
-from mcp.server import Server
-from mcp.types import Tool, TextContent, Resource, TextResourceContents
 import argparse
 import logging
-import traceback
+import os
+from contextlib import asynccontextmanager
+from typing import Optional, Dict, Any, List
+from mcp.server.fastmcp import FastMCP
 from .config import load_config
-from .file_operations import FileManager
+from .service import MarkdownService
 
-# Set up logging
 # Set up logging
 log_file_path = "server.log"
 logging.basicConfig(
@@ -15,7 +15,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_file_path),
-        logging.StreamHandler() # Also keep console output for immediate feedback
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -23,208 +23,149 @@ logger = logging.getLogger(__name__)
 class MarkdownMCPServer:
     def __init__(self, config_path: str = None):
         self.config = load_config(config_path)
-        self.file_manager = FileManager(
-            self.config.knowledge_base.root_directory,
-            self.config.knowledge_base.system_directory
-        )
-        self.server = Server("markdown-knowledge-base")
-        self.file_manager.create_llm_guide()
+        self.service = MarkdownService(self.config)
+        self.mcp = FastMCP("markdown-knowledge-base")
         self._register_tools()
         self._register_resources()
     
     def _register_tools(self):
-        """Register all MCP tools"""
+        """Register all MCP tools using the FastMCP decorator pattern"""
         
-        @self.server.list_tools()
-        async def list_tools():
-            return [
-                Tool(
-                    name="create_file",
-                    description="Create a new markdown file",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Relative path for the new file"},
-                            "content": {"type": "string", "description": "File content"},
-                            "metadata": {"type": "object", "description": "Optional frontmatter metadata"}
-                        },
-                        "required": ["path", "content"]
-                    }
-                ),
-                Tool(
-                    name="read_file",
-                    description="Read a markdown file",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Relative path to the file"}
-                        },
-                        "required": ["path"]
-                    }
-                ),
-                Tool(
-                    name="update_file",
-                    description="Update an existing markdown file",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Relative path to the file"},
-                            "content": {"type": "string", "description": "New content (optional)"},
-                            "metadata": {"type": "object", "description": "Metadata to update (optional)"}
-                        },
-                        "required": ["path"]
-                    }
-                ),
-                Tool(
-                    name="delete_file",
-                    description="Delete a markdown file",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Relative path to the file"}
-                        },
-                        "required": ["path"]
-                    }
-                ),
-                Tool(
-                    name="list_files",
-                    description="List all markdown files",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "pattern": {"type": "string", "description": "File pattern (default: *.md)"}
-                        }
-                    }
-                ),
-                Tool(
-                    name="search_content",
-                    description="Search for text across all files",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Search query"}
-                        },
-                        "required": ["query"]
-                    }
-                )
-            ]
-        
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: dict):
+        @self.mcp.tool()
+        def create_file(path: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+            """Create a new markdown file"""
             try:
-                if name == "create_file":
-                    result = self.file_manager.create_file(
-                        arguments["path"],
-                        arguments["content"],
-                        arguments.get("metadata")
-                    )
-                    return [TextContent(type="text", text=f"Created file: {result}")]
-                
-                elif name == "read_file":
-                    result = self.file_manager.read_file(arguments["path"])
-                    content = f"# {result['file_path']}\n\n"
-                    if result['metadata']:
-                        content += f"**Metadata:** {result['metadata']}\n\n"
-                    content += result['content']
-                    return [TextContent(type="text", text=content)]
-                
-                elif name == "update_file":
-                    result = self.file_manager.update_file(
-                        arguments["path"],
-                        arguments.get("content"),
-                        arguments.get("metadata")
-                    )
-                    return [TextContent(type="text", text=f"Updated file: {result}")]
-                
-                elif name == "delete_file":
-                    result = self.file_manager.delete_file(arguments["path"])
-                    if result:
-                        return [TextContent(type="text", text=f"Deleted file: {arguments['path']}")]
-                    else:
-                        return [TextContent(type="text", text=f"File not found: {arguments['path']}")]
-                
-                elif name == "list_files":
-                    pattern = arguments.get("pattern", "*.md")
-                    files = self.file_manager.list_files(pattern)
-                    return [TextContent(type="text", text=f"Found {len(files)} files:\n" + "\n".join(files))]
-                
-                elif name == "search_content":
-                    results = self.file_manager.search_content(arguments["query"])
-                    if not results:
-                        return [TextContent(type="text", text="No matches found")]
-                    
-                    content = f"Found {len(results)} matches:\n\n"
-                    for result in results:
-                        content += f"**{result['file_path']}**\n{result['match_preview']}\n\n"
-                    return [TextContent(type="text", text=content)]
-                
-                else:
-                    return [TextContent(type="text", text=f"Unknown tool: {name}")]
-            
+                result = self.service.file_manager.create_file(path, content, metadata)
+                return f"Created file: {result}"
             except Exception as e:
-                logger.error(f"Error in tool {name}: {e}")
-                tb = traceback.format_exc()
-                logger.error(tb)
-                return [TextContent(type="text", text=f"Error executing tool '{name}':\n\n{tb}")]
+                logger.error(f"Error creating file {path}: {e}")
+                raise
+        
+        @self.mcp.tool()
+        def read_file(path: str) -> str:
+            """Read a markdown file"""
+            try:
+                result = self.service.file_manager.read_file(path)
+                content = f"# {result['file_path']}\n\n"
+                if result['metadata']:
+                    content += f"**Metadata:** {result['metadata']}\n\n"
+                content += result['content']
+                return content
+            except Exception as e:
+                logger.error(f"Error reading file {path}: {e}")
+                raise
+        
+        @self.mcp.tool()
+        def update_file(path: str, content: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
+            """Update an existing markdown file"""
+            try:
+                result = self.service.file_manager.update_file(path, content, metadata)
+                return f"Updated file: {result}"
+            except Exception as e:
+                logger.error(f"Error updating file {path}: {e}")
+                raise
+        
+        @self.mcp.tool()
+        def delete_file(path: str) -> str:
+            """Delete a markdown file"""
+            try:
+                result = self.service.file_manager.delete_file(path)
+                if result:
+                    return f"Deleted file: {path}"
+                else:
+                    return f"File not found: {path}"
+            except Exception as e:
+                logger.error(f"Error deleting file {path}: {e}")
+                raise
+        
+        @self.mcp.tool()
+        def list_files(pattern: str = "*.md") -> str:
+            """List all markdown files"""
+            try:
+                files = self.service.file_manager.list_files(pattern)
+                return f"Found {len(files)} files:\n" + "\n".join(files)
+            except Exception as e:
+                logger.error(f"Error listing files with pattern {pattern}: {e}")
+                raise
+        
+        @self.mcp.tool()
+        def search_content(query: str) -> str:
+            """Search for text across all files"""
+            try:
+                results = self.service.file_manager.search_content(query)
+                if not results:
+                    return "No matches found"
+                
+                content = f"Found {len(results)} matches:\n\n"
+                for result in results:
+                    content += f"**{result['file_path']}**\n{result['match_preview']}\n\n"
+                return content
+            except Exception as e:
+                logger.error(f"Error searching content for query '{query}': {e}")
+                raise
     
     def _register_resources(self):
-        """Register all MCP resources"""
+        """Register all MCP resources using the FastMCP decorator pattern"""
         
-        @self.server.list_resources()
-        async def list_resources():
-            return [
-                Resource(
-                    uri="llm-guide://system/llm-guide.md",
-                    name="LLM Usage Guide",
-                    description="Instructions for LLMs on how to use the knowledge management system",
-                    mimeType="text/markdown"
-                )
-            ]
-        
-        @self.server.read_resource()
-        async def read_resource(uri: str):
+        @self.mcp.resource("llm-guide://system/llm-guide.md")
+        def llm_usage_guide() -> str:
+            """LLM Usage Guide - Comprehensive guide for LLMs on how to effectively use the markdown knowledge management system"""
             try:
-                if uri == "llm-guide://system/llm-guide.md":
-                    guide_data = self.file_manager.read_file("system/llm-guide.md")
-                    content = guide_data['content']
-                    if guide_data['metadata']:
-                        # Add metadata as frontmatter
-                        metadata_str = "\n".join([f"{k}: {v}" for k, v in guide_data['metadata'].items()])
-                        content = f"---\n{metadata_str}\n---\n\n{content}"
-                    # Return content string - MCP library handles the wrapping
-                    return content
-                else:
-                    return f"Unknown resource: {uri}"
+                guide_data = self.service.file_manager.read_file("system/llm-guide.md")
+                content = guide_data['content']
+                if guide_data['metadata']:
+                    # Add metadata as frontmatter
+                    metadata_str = "\n".join([f"{k}: {v}" for k, v in guide_data['metadata'].items()])
+                    content = f"---\n{metadata_str}\n---\n\n{content}"
+                return content
+            except FileNotFoundError as e:
+                raise ValueError(f"Resource not found: llm-guide://system/llm-guide.md - {str(e)}")
             except Exception as e:
-                logger.error(f"Error reading resource {uri}: {e}")
-                return f"Error: {str(e)}"
+                raise ValueError(f"Error reading resource: {str(e)}")
     
     def app(self):
-        return self.server
+        """Return the FastMCP server instance"""
+        return self.mcp
 
 def main():
     parser = argparse.ArgumentParser(description="Markdown Knowledge Base MCP Server")
     parser.add_argument("--config", help="Path to configuration file")
     parser.add_argument("--knowledge-base", help="Path to knowledge base directory")
-    parser.add_argument("--host", help="Host to bind to")
-    parser.add_argument("--port", help="Port to bind to")
+    parser.add_argument("--transport", choices=["stdio", "sse", "http"], default="stdio", 
+                        help="Transport type: stdio for standard MCP, sse for Server-Sent Events, http for streamable HTTP")
+    parser.add_argument("--host", default="localhost", help="Host to bind to (HTTP/SSE only)")
+    parser.add_argument("--port", type=int, default=3005, help="Port to bind to (HTTP/SSE only)")
     
     args = parser.parse_args()
     
     # Override config with command line arguments
     if args.knowledge_base:
-        import os
         os.environ["KNOWLEDGE_BASE_ROOT"] = args.knowledge_base
     
-    mcp_server = MarkdownMCPServer(args.config)
-    
-    # Get host and port from args or config
-    host = args.host or mcp_server.config.server.host
-    port = args.port or mcp_server.config.server.port
-    
-    import uvicorn
-    logger.info(f"Starting MCP server for knowledge base: {mcp_server.config.knowledge_base.root_directory} on {host}:{port}")
-    uvicorn.run(mcp_server.server, host=host, port=port)
+    try:
+        mcp_server = MarkdownMCPServer(args.config)
+        logger.info(f"Starting MCP server for knowledge base: {mcp_server.config.knowledge_base.root_directory}")
+        
+        if args.transport == "stdio":
+            # Run the FastMCP server with standard I/O
+            logger.info("Starting server with stdio transport")
+            asyncio.run(mcp_server.mcp.run())
+        elif args.transport == "sse":
+            # Run the FastMCP server with SSE transport
+            logger.info(f"Starting server with SSE transport on {args.host}:{args.port}")
+            import uvicorn
+            sse_app = mcp_server.mcp.sse_app()
+            uvicorn.run(sse_app, host=args.host, port=args.port, log_level="info")
+        elif args.transport == "http":
+            # Run the FastMCP server with streamable HTTP transport
+            logger.info(f"Starting server with streamable HTTP transport on {args.host}:{args.port}")
+            import uvicorn
+            http_app = mcp_server.mcp.streamable_http_app()
+            uvicorn.run(http_app, host=args.host, port=args.port, log_level="info")
+        
+    except Exception as e:
+        logger.error(f"Failed to start server: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
